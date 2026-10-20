@@ -1115,8 +1115,13 @@ pub fn show(app: &mut SheetApp, ctx: &egui::Context) {
                             d.values.insert("path".into(), json!(path));
                         }
                     }
-                    if (app.services.pick_picture.is_some() || app.services.pick_picture_async.is_some()) && ui.button("Browse…").clicked() {
-                        if let Some(start) = &app.services.pick_picture_async {
+                    if (app.services.pick_picture.is_some() || app.services.pick_picture_async.is_some() || app.services.ask_file.is_some())
+                        && ui.button("Browse…").clicked()
+                    {
+                        if let Some(ask) = &app.services.ask_file {
+                            // The host answers later; `finish_file_request` fills in the path.
+                            ask(crate::FileRequest::Picture);
+                        } else if let Some(start) = &app.services.pick_picture_async {
                             let inbox = crate::Inbox::default();
                             start(inbox.clone());
                             d.picture_inbox = Some(inbox);
@@ -1170,7 +1175,14 @@ pub fn show(app: &mut SheetApp, ctx: &egui::Context) {
                     d.values.insert("path".into(), json!(path.clone()));
                     ok_cancel(ui, &mut confirm, &mut open);
                     if confirm {
-                        let target = if path.is_empty() { app.services.pick_save.as_ref().and_then(|f| f(&format!("Copy.{fmt}"))) } else { Some(path) };
+                        let target = if !path.is_empty() {
+                            Some(path)
+                        } else if let Some(ask) = &app.services.ask_file {
+                            ask(crate::FileRequest::SaveCopy { fmt: fmt.clone(), suggested: format!("Copy.{fmt}") });
+                            None
+                        } else {
+                            app.services.pick_save.as_ref().and_then(|f| f(&format!("Copy.{fmt}")))
+                        };
                         if let Some(t) = target {
                             let id = match fmt.as_str() {
                                 "csv" => "file.exportCsv",

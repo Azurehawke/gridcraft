@@ -196,6 +196,70 @@ pub struct Services {
     /// Web: hand PDF bytes to the browser's print flow directly (no download,
     /// no intermediate file) — opens the system print dialog on that PDF.
     pub print: Option<Box<dyn Fn(&[u8])>>,
+    /// A host whose file choices are answered on a later frame (Android: GridCraft's own file
+    /// browser, drawn by the host). When set, Open, Save As, the exports, Save a Copy and Insert
+    /// Picture's Browse ask here instead of `pick_open`/`pick_save`/`pick_picture`, and the host
+    /// hands the answer to [`SheetApp::finish_file_request`].
+    pub ask_file: Option<Box<dyn Fn(FileRequest)>>,
+}
+
+/// A file choice a host answers on a later frame ([`Services::ask_file`]): what it is for.
+#[derive(Clone, Debug, PartialEq)]
+pub enum FileRequest {
+    /// File › Open: a workbook to open.
+    Open,
+    /// Save As (an Excel workbook); `suggested` is the file name offered.
+    SaveAs { suggested: String },
+    /// Export as `fmt` (`pdf`, `csv` or `html`); `params` are the export's other settings (range,
+    /// sheets, fit to page).
+    Export { fmt: String, suggested: String, params: Json },
+    /// Save a Copy as `fmt` (`xlsx`, `csv` or `html`).
+    SaveCopy { fmt: String, suggested: String },
+    /// Insert Picture's Browse: a PNG or JPEG for the open Insert Picture dialog.
+    Picture,
+}
+
+impl FileRequest {
+    /// Whether the answer is a file to write (it need not exist yet).
+    pub fn is_save(&self) -> bool {
+        !matches!(self, FileRequest::Open | FileRequest::Picture)
+    }
+
+    /// The name offered for a file to write; empty when choosing a file to read.
+    pub fn suggested(&self) -> &str {
+        match self {
+            FileRequest::SaveAs { suggested } | FileRequest::Export { suggested, .. } | FileRequest::SaveCopy { suggested, .. } => suggested,
+            FileRequest::Open | FileRequest::Picture => "",
+        }
+    }
+
+    /// The file types to list, as (label, extensions); the first is the default.
+    pub fn file_types(&self) -> Vec<(&'static str, Vec<&'static str>)> {
+        match self {
+            FileRequest::Open => vec![
+                ("Spreadsheets", vec!["xlsx", "xlsm", "xltx", "xls", "xlsb", "ods", "csv", "tsv", "txt", "json"]),
+                ("Excel Workbook", vec!["xlsx", "xlsm"]),
+                ("CSV", vec!["csv"]),
+                ("All files", vec!["*"]),
+            ],
+            FileRequest::Picture => vec![("Pictures (PNG, JPEG)", vec!["png", "jpg", "jpeg"]), ("All files", vec!["*"])],
+            FileRequest::SaveAs { .. } => vec![("Excel Workbook (.xlsx)", vec!["xlsx"])],
+            FileRequest::Export { fmt, .. } | FileRequest::SaveCopy { fmt, .. } => vec![match fmt.as_str() {
+                "pdf" => ("PDF (.pdf)", vec!["pdf"]),
+                "csv" => ("CSV UTF-8 (.csv)", vec!["csv"]),
+                "html" => ("Web Page (.html)", vec!["html"]),
+                _ => ("Excel Workbook (.xlsx)", vec!["xlsx"]),
+            }],
+        }
+    }
+
+    /// The extension a written file gets.
+    fn extension(&self) -> &str {
+        match self {
+            FileRequest::Export { fmt, .. } | FileRequest::SaveCopy { fmt, .. } => fmt,
+            _ => "xlsx",
+        }
+    }
 }
 
 /// Shared queue of files read asynchronously (browser file picker, drag and drop).
@@ -525,7 +589,10 @@ impl SheetApp {
         }
         // Menu-style Export as PDF with no file named: ask where to save, like Save As does.
         // Programmatic callers use `run` and keep getting the PDF bytes back.
-        if id == "file.exportPdf" && self.services.pick_save.is_some() && params.get("path").and_then(Json::as_str).is_none_or(str::is_empty) {
+        if id == "file.exportPdf"
+            && (self.services.pick_save.is_some() || self.services.ask_file.is_some())
+            && params.get("path").and_then(Json::as_str).is_none_or(str::is_empty)
+        {
             return self.export_pdf_with_picker(params);
         }
         if let Err(e) = self.run(id, params) {
@@ -541,6 +608,10 @@ impl SheetApp {
         }
         let title = self.session.active().map(|d| d.display_title()).unwrap_or_else(|| "Book1".into());
         let stem = std::path::Path::new(&title).file_stem().and_then(|s| s.to_str()).unwrap_or("Book1").to_string();
+        if let Some(ask) = &self.services.ask_file {
+            ask(FileRequest::Export { fmt: "pdf".into(), suggested: format!("{stem}.pdf"), params });
+            return;
+        }
         let Some(pick) = &self.services.pick_save else { return };
         let Some(path) = pick(&format!("{stem}.pdf")) else { return };
         // The picker may suggest a workbook extension; the export writes a PDF.
@@ -554,6 +625,67 @@ impl SheetApp {
         if let Err(e) = self.run("file.exportPdf", params) {
             self.alert(e);
         }
+    }
+
+    /// Finish a file choice the host answered later ([`Services::ask_file`]); `None`: cancelled.
+    /// A file to write gets the request's extension when the name has none (an export always
+    /// writes its own format).
+    pub fn finish_file_request(&mut self, req: FileRequest, picked: Option<String>) {
+        let Some(path) = picked.filter(|p| !p.trim().is_empty()) else { return };
+        let path = if req.is_save() {
+            let p = std::path::Path::new(&path);
+            let force = matches!(req, FileRequest::Export { .. });
+            if force || p.extension().is_none() { p.with_extension(req.extension()).to_string_lossy().into_owned() } else { path }
+        } else {
+            path
+        };
+        match req {
+            FileRequest::Open => self.open_path(&path),
+            FileRequest::SaveAs { .. } => {
+                if !self.commit_edit(0, 0, false, false) {
+                    return;
+                }
+                match self.run("file.save", json!({"path": path})) {
+                    Ok(_) => self.backstage = None,
+                    Err(e) => self.alert(e),
+                }
+            }
+            FileRequest::Export { fmt, mut params, .. } => {
+                let id = match fmt.as_str() {
+                    "pdf" => "file.exportPdf",
+                    "csv" => "file.exportCsv",
+                    "html" => "file.exportHtml",
+                    _ => return,
+                };
+                match &mut params {
+                    Json::Object(map) => {
+                        map.insert("path".into(), Json::String(path));
+                    }
+                    other => *other = json!({"path": path}),
+                }
+                match self.run(id, params) {
+                    Ok(_) => self.backstage = None,
+                    Err(e) => self.alert(e),
+                }
+            }
+            FileRequest::SaveCopy { fmt, .. } => {
+                let id = match fmt.as_str() {
+                    "csv" => "file.exportCsv",
+                    "html" => "file.exportHtml",
+                    _ => "file.saveAs",
+                };
+                self.run_or_alert(id, json!({"path": path}));
+            }
+            FileRequest::Picture => {
+                if let Some(d) = self.dialog.as_mut().filter(|d| d.name == "insertPicture") {
+                    d.values.remove("base64");
+                    let alt = std::path::Path::new(&path).file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+                    d.values.insert("alt".into(), json!(alt));
+                    d.values.insert("path".into(), json!(path));
+                }
+            }
+        }
+        self.after_engine();
     }
 
     /// Shows a command error: a toast for an unavailable command, else a message box.
@@ -738,7 +870,9 @@ impl SheetApp {
         }
         match name {
             "open" => {
-                if let Some(start) = &self.services.open_async {
+                if let Some(ask) = &self.services.ask_file {
+                    ask(FileRequest::Open);
+                } else if let Some(start) = &self.services.open_async {
                     start();
                 } else if let Some(pick) = &self.services.pick_open
                     && let Some(path) = pick()
@@ -748,7 +882,9 @@ impl SheetApp {
             }
             "saveAs" => {
                 let suggested = self.session.active().map(|d| d.display_title()).unwrap_or_else(|| "Book1".into());
-                if let Some(pick) = &self.services.pick_save {
+                if let Some(ask) = &self.services.ask_file {
+                    ask(FileRequest::SaveAs { suggested });
+                } else if let Some(pick) = &self.services.pick_save {
                     if let Some(path) = pick(&suggested) {
                         let path = if std::path::Path::new(&path).extension().is_none() { format!("{path}.xlsx") } else { path };
                         self.run_or_alert("file.save", json!({"path": path}));
