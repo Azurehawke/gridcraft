@@ -1,0 +1,48 @@
+== libgridcraft_android.so
+warning: Environment variable `ANDROID_NDK_HOME = "/usr/local/lib/android/sdk/ndk/30.0.16248370"` doesn't match `ANDROID_NDK_ROOT = "/usr/local/lib/android/sdk/ndk/27.3.13750724"`
+    Building arm64-v8a (aarch64-linux-android)
+[1m[92m    Updating[0m crates.io index
+[1m[92m     Locking[0m 15 packages to highest Rust 1.99.1 compatible versions
+[1m[92m      Adding[0m android_log-sys v0.3.2
+[1m[92m      Adding[0m android_logger v0.15.1
+[1m[92m      Adding[0m cesu8 v1.1.0
+[1m[92m      Adding[0m env_filter v0.1.4
+[1m[92m      Adding[0m jni v0.21.1 [1m[33m(available: v0.22.4)[0m
+[1m[92m      Adding[0m windows-sys v0.45.0
+[1m[92m      Adding[0m windows-targets v0.42.2
+[1m[92m      Adding[0m windows_aarch64_gnullvm v0.42.2
+[1m[92m      Adding[0m windows_aarch64_msvc v0.42.2
+[1m[92m      Adding[0m windows_i686_gnu v0.42.2
+[1m[92m      Adding[0m windows_i686_msvc v0.42.2
+[1m[92m      Adding[0m windows_x86_64_gnu v0.42.2
+[1m[92m      Adding[0m windows_x86_64_gnullvm v0.42.2
+[1m[92m      Adding[0m windows_x86_64_msvc v0.42.2
+[1m[92m      Adding[0m winit v0.30.13 (/home/runner/work/gridcraft/gridcraft/vendor/winit)
+[1m[92m Downloading[0m crates ...
+[1m[92m  Downloaded[0m chrono v0.4.45
+[1m[92m   Compiling[0m chrono v0.4.45
+[1m[92m   Compiling[0m winit v0.30.13 (/home/runner/work/gridcraft/gridcraft/vendor/winit)
+[1m[92m   Compiling[0m gridcraft-ui-egui v0.12.1 (/home/runner/work/gridcraft/gridcraft/crates/ui-egui)
+[1m[92m   Compiling[0m gridcraft-pdf v0.12.1 (/home/runner/work/gridcraft/gridcraft/crates/pdf)
+[1m[92m   Compiling[0m gridcraft-core v0.12.1 (/home/runner/work/gridcraft/gridcraft/crates/core)
+[1m[92m   Compiling[0m gridcraft-formula v0.12.1 (/home/runner/work/gridcraft/gridcraft/crates/formula)
+[1m[92m   Compiling[0m gridcraft-numfmt v0.12.1 (/home/runner/work/gridcraft/gridcraft/crates/numfmt)
+[1m[92m   Compiling[0m gridcraft-model v0.12.1 (/home/runner/work/gridcraft/gridcraft/crates/model)
+[1m[92m   Compiling[0m gridcraft-functions v0.12.1 (/home/runner/work/gridcraft/gridcraft/crates/functions)
+[1m[92m   Compiling[0m egui-winit v0.36.2
+[1m[92m   Compiling[0m egui-wgpu v0.36.2
+[1m[92m   Compiling[0m gridcraft-calc v0.12.1 (/home/runner/work/gridcraft/gridcraft/crates/calc)
+[1m[92m   Compiling[0m gridcraft-chart v0.12.1 (/home/runner/work/gridcraft/gridcraft/crates/chart)
+[1m[92m   Compiling[0m gridcraft-xlsx v0.12.1 (/home/runner/work/gridcraft/gridcraft/crates/xlsx)
+[1m[92m   Compiling[0m eframe v0.36.2
+[1m[92m   Compiling[0m gridcraft-engine v0.12.1 (/home/runner/work/gridcraft/gridcraft/crates/engine)
+[1m[92m   Compiling[0m gridcraft-android v0.12.1 (/home/runner/work/gridcraft/gridcraft/apps/gridcraft-android)
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 1m 18s
+     Copying libraries to /home/runner/work/gridcraft/gridcraft/target/android-apk/jniLibs
+== resources and manifest
+== activity class
+Note: /home/runner/work/gridcraft/gridcraft/packaging/android/java/ai/storyteller/gridcraft/GridCraftActivity.java uses or overrides a deprecated API.
+Note: Recompile with -Xlint:deprecation for details.
+== native library
+== align and sign
+-rw-r--r-- 1 runner runner 12911209 Oct 25 14:16 /home/runner/work/gridcraft/gridcraft/target/android-apk/gridcraft.apk
