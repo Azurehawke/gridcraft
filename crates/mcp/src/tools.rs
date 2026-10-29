@@ -118,7 +118,8 @@ pub fn tool_definitions() -> Vec<Value> {
              docs with list_commands. Examples: {\"command\":\"cell.set\",\"params\":{\"cell\":\"B2\",\"input\":\"=SUM(A1:A9)\"}}; \
              {\"command\":\"home.bold\",\"params\":{\"range\":\"A1:C1\"}}; {\"command\":\"sheet.insert\"}; \
              {\"command\":\"data.removeDuplicates\",\"params\":{\"range\":\"A1:C20\"}}. Most commands act on the current selection \
-             when `range` is omitted. Programmatic calls never open dialogs: missing required params give an error.",
+             when `range` is omitted. Charts whose data is on another sheet require `sheet.activate`, `insert.chart`, then `chart.move`; \
+             `chart.selectData` can likewise use a sheet-qualified range after activating the chart's sheet. Programmatic calls never open dialogs: missing required params give an error.",
             obj(
                 json!({"command": string("Command id, e.g. \"cell.set\", \"home.fillColor\", \"insert.chart\""), "params": params_schema()}),
                 &["command"],
@@ -255,7 +256,7 @@ pub fn tool_definitions() -> Vec<Value> {
         tool(
             "insert_chart",
             "Insert chart",
-            "Insert a chart from a data range (first row/column used as series names and categories, like Excel). Returns the chart id.",
+            "Insert a chart from a data range (first row/column used as series names and categories, like Excel). `sheet` is the sheet where the chart sits; a sheet-qualified `range` may name a different data sheet. The chart is moved there automatically. Returns the chart id.",
             obj(
                 json!({
                     "range": string("Source data range including headers, e.g. \"A1:C6\""),
@@ -263,8 +264,23 @@ pub fn tool_definitions() -> Vec<Value> {
                     "subtype": enumeration("Variant (optional)", &["clustered", "stacked", "stacked100", "markers"]),
                     "title": string("Chart title"),
                     "at": string("Top-left anchor cell (default: right of the data)"),
+                    "sheet": string("Sheet where the chart is placed (name or index; default: active sheet)"),
                 }),
                 &["range", "type"],
+            ),
+            false,
+        ),
+        tool(
+            "chart_set_data",
+            "Set chart data",
+            "Point an existing chart at a range on any sheet. Series are read from that sheet; the chart can stay where it is.",
+            obj(
+                json!({
+                    "chart": int("Chart id"),
+                    "sheet": string("Sheet containing the chart (name or index; default: active sheet)"),
+                    "range": string("Source data range, optionally sheet-qualified, e.g. \"'Data'!A1:B4\""),
+                }),
+                &["chart", "range"],
             ),
             false,
         ),
@@ -596,6 +612,59 @@ fn screenshot(b: &mut dyn Backend, a: &Args) -> Result<Value, String> {
     b.call("ui.screenshot", json!({"path": req_str(a, "path")?}))
 }
 
+fn range_sheet(range: &str) -> Option<&str> {
+    let bang = range.rfind('!')?;
+    let name = range[..bang].trim();
+    let name = name.strip_prefix('\'').and_then(|n| n.strip_suffix('\'')).unwrap_or(name);
+    (!name.is_empty()).then_some(name)
+}
+
+fn workbook_sheet_name(info: &Value, sheet: &Value) -> Result<String, String> {
+    let sheets = info["sheets"].as_array().ok_or("inspect_workbook returned no sheets")?;
+    let found = sheets.iter().enumerate().find(|(i, item)| match (sheet.as_u64(), sheet.as_str()) {
+        (Some(want), _) => *i == want as usize,
+        (_, Some(want)) => item["name"].as_str().is_some_and(|name| name.eq_ignore_ascii_case(want)),
+        _ => false,
+    });
+    found.and_then(|(_, item)| item["name"].as_str()).map(str::to_owned).ok_or_else(|| "no such sheet".into())
+}
+
+fn insert_chart(b: &mut dyn Backend, a: &Args) -> Result<Value, String> {
+    let range = req_str(a, "range")?;
+    let destination = if let Some(sheet) = a.get("sheet") {
+        let info = b.call("document.inspect", json!({}))?;
+        let name = workbook_sheet_name(&info, sheet)?;
+        exec(b, "sheet.activate", json!({"sheet": sheet}))?;
+        name
+    } else {
+        let info = b.call("document.inspect", json!({}))?;
+        let active = info["activeSheet"].as_u64().ok_or("active sheet is unavailable")?;
+        workbook_sheet_name(&info, &json!(active))?
+    };
+    let data_name = range_sheet(range).map(|n| n.trim_matches('\'').to_owned());
+    if let Some(data_name) = data_name.as_deref() {
+        let info = b.call("document.inspect", json!({}))?;
+        workbook_sheet_name(&info, &json!(data_name))?;
+    }
+    if data_name.as_deref().is_none_or(|name| name.eq_ignore_ascii_case(&destination)) {
+        return exec(b, "insert.chart", pick(a, &["range", "type", "subtype", "title", "at", "sheet"]));
+    }
+    let data_name = data_name.ok_or("invalid sheet-qualified range")?;
+    exec(b, "sheet.activate", json!({"sheet": data_name}))?;
+    let id = exec(b, "insert.chart", pick(a, &["range", "type", "subtype", "title", "at"]))?;
+    exec(b, "chart.move", json!({"chart": id["chart"], "sheet": destination, "at": a.get("at").and_then(Value::as_str).unwrap_or("A1")}))?;
+    Ok(id)
+}
+
+fn chart_set_data(b: &mut dyn Backend, a: &Args) -> Result<Value, String> {
+    if let Some(sheet) = a.get("sheet") {
+        let info = b.call("document.inspect", json!({}))?;
+        workbook_sheet_name(&info, sheet)?;
+        exec(b, "sheet.activate", json!({"sheet": sheet}))?;
+    }
+    exec(b, "chart.selectData", pick(a, &["chart", "range"]))
+}
+
 fn dispatch(b: &mut dyn Backend, name: &str, a: &Args) -> Result<Value, String> {
     match name {
         "execute_command" => {
@@ -623,7 +692,8 @@ fn dispatch(b: &mut dyn Backend, name: &str, a: &Args) -> Result<Value, String> 
         }
         "select" => exec(b, "selection.set", pick(a, &["range", "active"])),
         "format_range" => format_range(b, a),
-        "insert_chart" => exec(b, "insert.chart", pick(a, &["range", "type", "subtype", "title", "at"])),
+        "insert_chart" => insert_chart(b, a),
+        "chart_set_data" => chart_set_data(b, a),
         "create_table" => exec(b, "insert.table", pick(a, &["range", "style", "header", "name"])),
         "sort_range" => sort_range(b, a),
         "filter" => filter(b, a),

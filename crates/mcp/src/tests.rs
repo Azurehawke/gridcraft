@@ -96,6 +96,7 @@ fn tools_list_has_schemas() {
         "select",
         "format_range",
         "insert_chart",
+        "chart_set_data",
         "create_table",
         "sort_range",
         "filter",
@@ -320,7 +321,23 @@ fn agent_builds_a_budget() {
     assert!((v["result"].as_f64().unwrap() - (1950.5 + 1836.25 + 1902.0) / 3.0).abs() < 1e-9);
 }
 
-// ---------- serve loop + remote ----------
+#[test]
+fn charts_can_use_data_on_another_sheet() {
+    let mut s = server();
+    ok(&mut s, "write_range", json!({"range": "A1:B4", "values": [["Quarter", "Sales"], ["Q1", 10], ["Q2", 20], ["Q3", 30]]}));
+    ok(&mut s, "execute_command", json!({"command": "home.insertSheet", "params": {"name": "Dashboard"}}));
+    ok(&mut s, "insert_chart", json!({"range": "Sheet1!A1:B4", "type": "line", "sheet": "Dashboard", "at": "D2"}));
+    let info = ok(&mut s, "inspect_workbook", json!({}));
+    let dashboard = info["sheets"].as_array().and_then(|sheets| sheets.iter().find(|sheet| sheet["name"] == "Dashboard")).expect("Dashboard sheet");
+    assert_eq!(dashboard["charts"].as_array().map(Vec::len), Some(1));
+    assert_eq!(dashboard["charts"][0]["at"], "D2", "{info}");
+    let chart = dashboard["charts"][0]["id"].as_u64().expect("chart id");
+
+    ok(&mut s, "chart_set_data", json!({"chart": chart, "sheet": "Dashboard", "range": "Sheet1!A1:B4"}));
+    assert!(fails(&mut s, "chart_set_data", json!({"chart": chart, "sheet": "Missing", "range": "A1:B2"})).contains("no such sheet"));
+    assert!(fails(&mut s, "chart_set_data", json!({"chart": 999999, "sheet": "Dashboard", "range": "Sheet1!A1:B4"})).contains("chart"));
+    assert!(fails(&mut s, "insert_chart", json!({"range": "Missing!A1:B2", "type": "line", "sheet": "Dashboard"})).contains("no such sheet"));
+}
 
 #[test]
 fn serve_loop_over_buffers() {
