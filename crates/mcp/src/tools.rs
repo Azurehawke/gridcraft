@@ -43,7 +43,7 @@ fn enumeration(desc: &str, values: &[&str]) -> Value {
     json!({"type": "string", "enum": values, "description": desc})
 }
 fn params_schema() -> Value {
-    json!({"type": "object", "description": "Command parameters (see the `params` field of list_commands); omit or {} for defaults"})
+    json!({"oneOf": [{"type": "object"}, {"type": "string"}], "description": "Command parameters as a JSON object, or a JSON string that parses to an object (see the `params` field of list_commands); omit or {} for defaults"})
 }
 fn color(desc: &str) -> Value {
     json!({"type": "string", "description": desc})
@@ -273,12 +273,14 @@ pub fn tool_definitions() -> Vec<Value> {
         tool(
             "chart_set_data",
             "Set chart data",
-            "Point an existing chart at a range on any sheet. Series are read from that sheet; the chart can stay where it is.",
+            "Point an existing chart at one contiguous range on any sheet. Series are read from that sheet; the chart can stay where it is. `categories` overrides horizontal axis labels for every series (use a sheet-qualified range such as \\\"'Scan Data'!A2:A49\\\"). `removeSeries` is an array of 0-based series indexes removed after reading the range; use it to skip columns.",
             obj(
                 json!({
                     "chart": int("Chart id"),
                     "sheet": string("Sheet containing the chart (name or index; default: active sheet)"),
-                    "range": string("Source data range, optionally sheet-qualified, e.g. \"'Data'!A1:B4\""),
+                    "range": string("Source data range, optionally sheet-qualified, e.g. \\\"'Data'!A1:B4\\\""),
+                    "categories": string("Optional sheet-qualified horizontal axis labels, e.g. \\\"'Scan Data'!A2:A49\\\""),
+                    "removeSeries": {"type": "array", "items": {"type": "integer", "minimum": 0}, "description": "Optional 0-based series indexes to remove after reading the range"},
                 }),
                 &["chart", "range"],
             ),
@@ -657,12 +659,16 @@ fn insert_chart(b: &mut dyn Backend, a: &Args) -> Result<Value, String> {
 }
 
 fn chart_set_data(b: &mut dyn Backend, a: &Args) -> Result<Value, String> {
+    let range = req_str(a, "range")?;
+    if range.contains(',') {
+        return Err("chart_set_data takes one contiguous range; use a wider range and removeSeries to skip columns".into());
+    }
     if let Some(sheet) = a.get("sheet") {
         let info = b.call("document.inspect", json!({}))?;
         workbook_sheet_name(&info, sheet)?;
         exec(b, "sheet.activate", json!({"sheet": sheet}))?;
     }
-    exec(b, "chart.selectData", pick(a, &["chart", "range"]))
+    exec(b, "chart.selectData", pick(a, &["chart", "range", "categories", "removeSeries"]))
 }
 
 fn dispatch(b: &mut dyn Backend, name: &str, a: &Args) -> Result<Value, String> {
@@ -672,7 +678,14 @@ fn dispatch(b: &mut dyn Backend, name: &str, a: &Args) -> Result<Value, String> 
             let p = match a.get("params") {
                 None | Some(Value::Null) => json!({}),
                 Some(v @ Value::Object(_)) => v.clone(),
-                Some(_) => return Err("`params` must be an object".into()),
+                Some(Value::String(text)) => {
+                    let parsed: Value = serde_json::from_str(text).map_err(|e| format!("`params` string must contain a JSON object: {e}"))?;
+                    if !parsed.is_object() {
+                        return Err("`params` string must contain a JSON object".into());
+                    }
+                    parsed
+                }
+                Some(_) => return Err("`params` must be an object or a JSON string containing an object".into()),
             };
             exec(b, cmd, p)
         }
