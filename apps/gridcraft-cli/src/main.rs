@@ -9,7 +9,7 @@
 //! gridcraft-cli run [--in FILE | --sample NAME] [--cmd 'id={json}']... [--script FILE.jsonl] [--out FILE] [--print RANGE] [--quiet]
 //! gridcraft-cli commands [--json] [--search X]
 //! gridcraft-cli functions [--json] [--search X] [--category C]
-//! gridcraft-cli mcp [--connect PORT] [--in FILE | --sample NAME]
+//! gridcraft-cli mcp [--connect PORT] [--in FILE | --sample NAME] [--http ADDR [--token T] [--allow-origin O,…]]
 //! gridcraft-cli send <port> <method> [json]
 //! gridcraft-cli version | --version
 //! ```
@@ -48,6 +48,9 @@ const USAGE: &str = "usage:
   gridcraft-cli commands [--json] [--search X]
   gridcraft-cli functions [--json] [--search X] [--category C]
   gridcraft-cli mcp [--connect PORT] [--in FILE | --sample NAME]
+                     [--http PORT|HOST:PORT [--token TOKEN] [--allow-origin ORIGIN,…]]
+                     stdio by default; --http serves MCP over HTTP at /mcp (a non-loopback
+                     address needs a token: --token or GRIDCRAFT_MCP_TOKEN)
   gridcraft-cli send <port> <method> [json]
   gridcraft-cli version";
 
@@ -526,7 +529,7 @@ fn functions(args: &[String]) -> Result<(), String> {
 /// started with `gridcraft --control PORT`). JSON-RPC on stdin/stdout; logs on stderr.
 fn mcp(args: &[String]) -> Result<(), String> {
     use gridcraft_mcp::{Backend, Headless, Remote, Server, control_addr};
-    let a = Args::parse(args, &["connect", "in", "sample"], &[])?;
+    let a = Args::parse(args, &["connect", "in", "sample", "http", "token", "allow-origin"], &[])?;
     a.no_extra(0)?;
     let backend: Box<dyn Backend> = match a.opt("connect") {
         Some(c) => {
@@ -549,6 +552,20 @@ fn mcp(args: &[String]) -> Result<(), String> {
             Box::new(Headless::with_session(session))
         }
     };
+    if let Some(h) = a.opt("http") {
+        let addr = gridcraft_mcp::http_addr(h).map_err(|e| format!("--http {h}: {e}"))?;
+        // The environment keeps the token out of the process list.
+        let token = a.opt("token").map(str::to_string).or_else(|| std::env::var("GRIDCRAFT_MCP_TOKEN").ok()).filter(|t| !t.is_empty());
+        let allowed_origins: Vec<String> =
+            a.opt("allow-origin").map(|s| s.split(',').map(|o| o.trim().to_string()).filter(|o| !o.is_empty()).collect()).unwrap_or_default();
+        let opts = gridcraft_mcp::HttpOptions { token, allowed_origins };
+        let access = if opts.token.is_some() { "bearer token required" } else { "no token: this machine only" };
+        eprintln!("gridcraft-cli: MCP server on http://{addr}{} ({}; {access})", gridcraft_mcp::MCP_PATH, backend.describe());
+        return gridcraft_mcp::serve_http(&mut Server::new(backend), &addr, &opts).map_err(|e| e.to_string());
+    }
+    if a.opt("token").is_some() || a.opt("allow-origin").is_some() {
+        return Err("--token and --allow-origin only apply with --http".into());
+    }
     eprintln!("gridcraft-cli: MCP server on stdio ({})", backend.describe());
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();

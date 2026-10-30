@@ -96,6 +96,7 @@ fn tools_list_has_schemas() {
         "select",
         "format_range",
         "insert_chart",
+        "chart_set_data",
         "create_table",
         "sort_range",
         "filter",
@@ -320,7 +321,73 @@ fn agent_builds_a_budget() {
     assert!((v["result"].as_f64().unwrap() - (1950.5 + 1836.25 + 1902.0) / 3.0).abs() < 1e-9);
 }
 
-// ---------- serve loop + remote ----------
+#[test]
+fn charts_can_use_data_on_another_sheet() {
+    let mut s = server();
+    ok(&mut s, "execute_command", json!({"command": "home.insertSheet", "params": {"name": "Data"}}));
+    ok(&mut s, "write_range", json!({"range": "Data!A1:B4", "values": [["Quarter", "Sales"], ["Q1", 10], ["Q2", 20], ["Q3", 30]]}));
+    ok(&mut s, "execute_command", json!({"command": "home.insertSheet", "params": {"name": "Dashboard"}}));
+    ok(&mut s, "insert_chart", json!({"range": "'Data'!A1:B4", "type": "line", "sheet": "Dashboard", "at": "D2"}));
+    let info = ok(&mut s, "inspect_workbook", json!({}));
+    let dashboard = info["sheets"].as_array().and_then(|sheets| sheets.iter().find(|sheet| sheet["name"] == "Dashboard")).expect("Dashboard sheet");
+    assert_eq!(dashboard["charts"].as_array().map(Vec::len), Some(1));
+    assert_eq!(dashboard["charts"][0]["at"], "D2", "{info}");
+    let series = dashboard["charts"][0]["series"].as_array().expect("chart series");
+    assert_eq!(series[0]["values"], "Data!$B$2:$B$4", "{info}");
+    assert_eq!(series[0]["categories"], "Data!$A$2:$A$4", "{info}");
+    assert_eq!(series[0]["name"], "Data!$B$1", "{info}");
+    let chart = dashboard["charts"][0]["id"].as_u64().expect("chart id");
+
+    ok(&mut s, "chart_set_data", json!({"chart": chart, "sheet": "Dashboard", "range": "'Data'!A1:B4"}));
+    assert!(fails(&mut s, "chart_set_data", json!({"chart": chart, "sheet": "Missing", "range": "A1:B2"})).contains("no such sheet"));
+    assert!(fails(&mut s, "chart_set_data", json!({"chart": 999999, "sheet": "Dashboard", "range": "'Data'!A1:B4"})).contains("chart"));
+    assert!(fails(&mut s, "insert_chart", json!({"range": "Missing!A1:B2", "type": "line", "sheet": "Dashboard"})).contains("no such sheet"));
+}
+
+#[test]
+fn chart_set_data_categories_and_remove_series() {
+    let mut s = server();
+    ok(&mut s, "execute_command", json!({"command": "home.insertSheet", "params": {"name": "Scan Data"}}));
+    let mut rows = vec![vec![json!(45000), json!("D"), json!("E"), json!("F"), json!("G"), json!("H")]];
+    for i in 1..49 {
+        rows.push(vec![json!(45000 + i), json!(i), json!(i + 100), json!(i + 200), json!(i + 300), json!(i + 400)]);
+    }
+    ok(&mut s, "write_range", json!({"range": "'Scan Data'!A1:F49", "values": rows}));
+    ok(&mut s, "execute_command", json!({"command": "home.insertSheet", "params": {"name": "Dashboard"}}));
+    ok(&mut s, "insert_chart", json!({"range": "'Scan Data'!A1:F49", "type": "line", "sheet": "Dashboard"}));
+    let chart = ok(&mut s, "inspect_workbook", json!({}))["sheets"]
+        .as_array()
+        .and_then(|sheets| sheets.iter().find(|sheet| sheet["name"] == "Dashboard"))
+        .and_then(|sheet| sheet["charts"][0]["id"].as_u64())
+        .expect("chart id");
+    ok(
+        &mut s,
+        "chart_set_data",
+        json!({"chart": chart, "sheet": "Dashboard", "range": "'Scan Data'!B1:F49", "categories": "'Scan Data'!A2:A49", "removeSeries": [1, 2, 3]}),
+    );
+    let info = ok(&mut s, "inspect_workbook", json!({}));
+    let dashboard = info["sheets"].as_array().and_then(|sheets| sheets.iter().find(|sheet| sheet["name"] == "Dashboard")).expect("Dashboard sheet");
+    let series = dashboard["charts"][0]["series"].as_array().expect("series");
+    assert_eq!(series.len(), 2, "{info}");
+    assert_eq!(series[0]["values"], "'Scan Data'!$B$2:$B$49", "{info}");
+    assert_eq!(series[1]["values"], "'Scan Data'!$F$2:$F$49", "{info}");
+    for item in series {
+        assert_eq!(item["categories"], "'Scan Data'!$A$2:$A$49", "{info}");
+    }
+    assert!(
+        fails(&mut s, "chart_set_data", json!({"chart": chart, "sheet": "Dashboard", "range": "'Scan Data'!B1:B49,'Scan Data'!D1:D49"}))
+            .contains("chart_set_data takes one contiguous range; use a wider range and removeSeries to skip columns")
+    );
+}
+
+#[test]
+fn execute_command_accepts_object_or_json_string_params() {
+    let mut s = server();
+    let object = ok(&mut s, "execute_command", json!({"command": "formulas.evaluate", "params": {"formula": "=2+3"}}));
+    let string = ok(&mut s, "execute_command", json!({"command": "formulas.evaluate", "params": "{\"formula\":\"=2+3\"}"}));
+    assert_eq!(object, string);
+    assert!(fails(&mut s, "execute_command", json!({"command": "formulas.evaluate", "params": "[]"})).contains("JSON object"));
+}
 
 #[test]
 fn serve_loop_over_buffers() {

@@ -35,6 +35,52 @@ JSON config (`.mcp.json`, Claude Desktop, other clients):
 Use `"args": ["mcp", "--connect", "7979"]` for the desktop app, or `["mcp", "--in", "/path/book.xlsx"]` to start
 with a file open.
 
+## Over HTTP
+
+`--http` serves the same server over MCP's Streamable HTTP transport instead of stdio, for clients on other
+machines or in apps that can't start a local program (a phone or tablet, an Obsidian plugin, a web client):
+
+```sh
+# This machine only (loopback); no token needed.
+gridcraft-cli mcp --http 8790 --in ~/vault/Budget.xlsx
+
+# Reachable from your network: a bearer token is required (kept out of the process list via the environment).
+GRIDCRAFT_MCP_TOKEN="$(openssl rand -hex 24)" gridcraft-cli mcp --http 0.0.0.0:8790
+```
+
+| Option | Meaning |
+|---|---|
+| `--http PORT` or `--http HOST:PORT` | Listen on HTTP; a bare port means `127.0.0.1:PORT`. The endpoint is `http://HOST:PORT/mcp`. |
+| `--token TOKEN` / `GRIDCRAFT_MCP_TOKEN` | Every request must send `Authorization: Bearer TOKEN`. **Required** on any address other than loopback: without one the server refuses to start, since anyone who can reach the port could edit workbooks. |
+| `--allow-origin O1,O2` | Extra browser origins allowed when there's no token (local origins, `app://obsidian.md` and `capacitor://localhost` always are). |
+
+Behaviour:
+
+- `POST /mcp` (or `/`) carries one JSON-RPC message; the reply comes back as `application/json`, and a notification
+  gets `202 Accepted`. There is no server-initiated stream, so `GET /mcp` is `405`, as the spec allows. No
+  `Mcp-Session-Id` is issued.
+- `GET /health` answers `ok`, for uptime monitors.
+- Every client shares one server, so one session and its open workbook. Requests are served one at a time; each
+  connection closes after its reply, and stalled connections time out after 30 s.
+- Browser `Origin`s are checked (DNS-rebinding protection): without a token only local origins and `--allow-origin`
+  ones may call; with a token any origin may, but only with the token. CORS preflights are answered.
+- Requests are capped (16 KB of headers, 16 MB of body); malformed ones get an HTTP error, never a crash.
+- It's plain HTTP. Off a trusted network, put it behind TLS (a reverse proxy such as Caddy, or Tailscale).
+
+Client config (clients that speak Streamable HTTP):
+
+```json
+{
+  "mcpServers": {
+    "gridcraft": {
+      "type": "http",
+      "url": "http://homeserver:8790/mcp",
+      "headers": { "Authorization": "Bearer YOUR_TOKEN" }
+    }
+  }
+}
+```
+
 ## Tools
 
 | Tool | Arguments | Does |
@@ -83,5 +129,6 @@ methods `-32601`.
 
 `gridcraft-mcp` is a library: `Server::new(Box::new(Headless::new()))` or
 `Server::new(Box::new(Remote::connect(&control_addr("7979"))?))`, then `Server::serve(stdin, stdout)` or
-`Server::handle_line(line) -> Option<String>`. Implement the `Backend` trait (`call(method, params)`) to drive another
+`Server::handle_line(line) -> Option<String>`, or `serve_http(&mut server, "127.0.0.1:8790", &HttpOptions::default())`
+for HTTP. Implement the `Backend` trait (`call(method, params)`) to drive another
 host.
